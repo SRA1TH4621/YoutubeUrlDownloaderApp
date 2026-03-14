@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: youtube-url-downloader
+    env: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: YTDLP_COOKIES_FILE
+        value: /data/cookies.txt
+    disk:
+      name: cookies
+      mountPath: /data
+      sizeGB: 1

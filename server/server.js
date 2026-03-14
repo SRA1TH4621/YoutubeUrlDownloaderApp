@@ -11,6 +11,7 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
 const DOWNLOAD_DIR = path.join(__dirname, "..", "downloads");
+const COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || "";
 
 const jobs = new Map(); // jobId -> { path, ext, title, status }
 const wsSubscribers = new Map(); // jobId -> Set(ws)
@@ -104,11 +105,24 @@ function mapFormats(info) {
   return results;
 }
 
+function applyCookieArgs(args) {
+  if (COOKIES_FILE) {
+    if (fs.existsSync(COOKIES_FILE)) {
+      args.push("--cookies", COOKIES_FILE);
+    } else {
+      console.warn(
+        `YTDLP_COOKIES_FILE not found: ${COOKIES_FILE}. Skipping cookies.`
+      );
+    }
+  }
+}
+
 app.post("/api/info", (req, res) => {
   const url = String(req.body?.url || "").trim();
   if (!url) return res.status(400).json({ error: "Missing URL" });
 
   const args = ["-J", "--no-playlist", url];
+  applyCookieArgs(args);
   const proc = spawn("yt-dlp", args);
   let responded = false;
 
@@ -192,6 +206,7 @@ app.post("/api/download", (req, res) => {
   const outTemplate = path.join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
 
   const args = ["--no-playlist", "--newline", "-o", outTemplate];
+  applyCookieArgs(args);
 
   if (isMp3) {
     args.push("-x", "--audio-format", "mp3");
