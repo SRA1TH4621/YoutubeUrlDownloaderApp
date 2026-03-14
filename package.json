@@ -1,0 +1,15 @@
+{
+  "name": "youtube-downloader-pro",
+  "version": "1.0.0",
+  "description": "Professional YouTube downloader with auto-detect, resolution select, MP3, and progress.",
+  "main": "server/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

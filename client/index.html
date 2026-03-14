@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YouTube Downloader Pro</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="hero">
+        <div class="brand">YT Downloader Pro</div>
+        <h1>Download YouTube in any resolution or MP3</h1>
+        <p class="subhead">
+          Paste a link. Auto-detects formats in 2 seconds. Supports 4K/8K
+          merging and live progress.
+        </p>
+        <div class="support-note">
+          Supports YouTube, TikTok, Vimeo, X/Twitter, Pinterest, and 1000+
+          sites via yt-dlp.
+        </div>
+
+        <div class="input-row">
+          <input
+            id="urlInput"
+            type="text"
+            placeholder="Paste YouTube URL here"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="fetchBtn" type="button">Detect</button>
+        </div>
+        <div class="status" id="statusText">Idle</div>
+      </section>
+
+      <section class="details">
+        <div class="thumb-wrap">
+          <iframe
+            id="previewFrame"
+            title="Video preview"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowfullscreen
+          ></iframe>
+          <img id="thumb" alt="Video thumbnail" />
+          <div class="thumb-loading" id="thumbLoading">
+            Loading<span class="dot">.</span><span class="dot">.</span
+            ><span class="dot">.</span>
+          </div>
+          <div class="preview-note" id="previewNote">
+            Preview not available for this site
+          </div>
+        </div>
+        <div class="meta">
+          <div class="title" id="titleText">No video loaded</div>
+          <div class="duration" id="durationText"></div>
+          <div class="formats" id="formats"></div>
+        </div>
+      </section>
+
+      <section class="progress-section">
+        <div class="progress-label">
+          <span>Download Progress</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-meta" id="progressMeta">
+          Speed: --  |  Remaining: --
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="download-link" id="downloadLink"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
