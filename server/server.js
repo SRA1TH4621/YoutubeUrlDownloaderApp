@@ -1,6 +1,6 @@
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, exec } = require("child_process");
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
@@ -11,10 +11,9 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
 const DOWNLOAD_DIR = path.join(__dirname, "..", "downloads");
-const COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || "";
 
-const jobs = new Map(); // jobId -> { path, ext, title, status }
-const wsSubscribers = new Map(); // jobId -> Set(ws)
+const jobs = new Map();
+const wsSubscribers = new Map();
 
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -23,41 +22,37 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "..", "client")));
 
-function safeAsciiFilename(input) {
-  const base = (input || "video")
+function safeFilename(name) {
+  return (name || "video")
     .replace(/[^\x20-\x7E]+/g, "")
-    .replace(/[\s]+/g, " ")
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "")
-    .trim();
-  return base.length > 0 ? base.slice(0, 80) : "video";
+    .replace(/[<>:"/\\|?*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 function sendProgress(jobId, payload) {
   const subs = wsSubscribers.get(jobId);
   if (!subs) return;
-  const data = JSON.stringify(payload);
+
+  const msg = JSON.stringify(payload);
+
   for (const ws of subs) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
   }
 }
 
 function parseProgress(line) {
-  const percentMatch = line.match(/(\d+(?:\.\d+)?)%/);
-  const speedMatch = line.match(/at\s+([0-9.]+\s*[KMG]i?B\/s)/i);
-  const etaMatch = line.match(/ETA\s+([0-9:]+)/i);
-
-  let percent = null;
-  if (percentMatch) {
-    const value = Number(percentMatch[1]);
-    if (!Number.isNaN(value)) {
-      percent = Math.max(0, Math.min(100, value));
-    }
-  }
+  const percent = line.match(/(\d+(?:\.\d+)?)%/);
+  const speed = line.match(/at\s+([0-9.]+\s*[KMG]i?B\/s)/i);
+  const eta = line.match(/ETA\s+([0-9:]+)/i);
 
   return {
-    percent,
-    speed: speedMatch ? speedMatch[1].replace(/\s+/g, " ") : null,
-    eta: etaMatch ? etaMatch[1] : null,
+    percent: percent ? Number(percent[1]) : null,
+    speed: speed ? speed[1] : null,
+    eta: eta ? eta[1] : null,
   };
 }
 
@@ -65,39 +60,29 @@ function mapFormats(info) {
   const wanted = [360, 480, 720, 1080, 1440, 2160, 4320];
   const formats = info.formats || [];
 
-  const pickByHeight = (height) => {
-    const candidates = formats.filter(
-      (f) =>
-        f.height === height &&
-        f.vcodec &&
-        f.vcodec !== "none" &&
-        f.filesize !== 0
-    );
-    if (candidates.length === 0) return null;
-    const sorted = candidates.sort((a, b) => {
-      const brA = a.tbr || 0;
-      const brB = b.tbr || 0;
-      const extA = a.ext === "mp4" ? 1 : 0;
-      const extB = b.ext === "mp4" ? 1 : 0;
-      return brB - brA || extB - extA;
-    });
-    return sorted[0];
-  };
-
   const results = [];
-  for (const h of wanted) {
-    const fmt = pickByHeight(h);
-    if (!fmt) continue;
-    const sizeBytes = fmt.filesize || fmt.filesize_approx || 0;
+
+  for (const height of wanted) {
+    const candidates = formats.filter(
+      (f) => f.height === height && f.vcodec !== "none",
+    );
+
+    if (!candidates.length) continue;
+
+    const best = candidates.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
+
+    const sizeBytes = best.filesize || best.filesize_approx || 0;
+
     const sizeMb = sizeBytes
       ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`
       : "";
+
     results.push({
-      height: h,
-      label: h >= 2160 ? `${h / 1080}K` : `${h}p`,
-      formatId: fmt.format_id,
-      ext: fmt.ext || "mp4",
-      hasAudio: fmt.acodec && fmt.acodec !== "none",
+      height,
+      label: height >= 2160 ? `${height / 1080}K` : `${height}p`,
+      formatId: best.format_id,
+      ext: best.ext || "mp4",
+      hasAudio: best.acodec !== "none",
       sizeMb,
     });
   }
@@ -105,163 +90,92 @@ function mapFormats(info) {
   return results;
 }
 
-function applyCookieArgs(args) {
-  if (COOKIES_FILE) {
-    if (fs.existsSync(COOKIES_FILE)) {
-      args.push("--cookies", COOKIES_FILE);
-    } else {
-      console.warn(
-        `YTDLP_COOKIES_FILE not found: ${COOKIES_FILE}. Skipping cookies.`
-      );
-    }
-  }
-}
+exec("python3 -m yt_dlp --version", (err, stdout) => {
+  console.log("yt-dlp version:", stdout);
+});
 
 app.post("/api/info", (req, res) => {
   const url = String(req.body?.url || "").trim();
+
   if (!url) return res.status(400).json({ error: "Missing URL" });
 
-  const args = ["-J", "--no-playlist", url];
-  applyCookieArgs(args);
-  const proc = spawn("python3", ["-m", "yt_dlp", ...args]);
-  let responded = false;
+  const proc = spawn("python3", ["-m", "yt_dlp", "-J", "--no-playlist", url]);
 
-  let out = "";
+  let data = "";
   let err = "";
-  proc.stdout.on("data", (d) => (out += d.toString("utf8")));
-  proc.stderr.on("data", (d) => (err += d.toString("utf8")));
 
-  proc.on("error", (spawnErr) => {
-    if (responded) return;
-    responded = true;
-    console.error("yt-dlp spawn error (info):", spawnErr);
-    if (spawnErr && spawnErr.code === "ENOENT") {
-      return res.status(500).json({
-        error: "yt-dlp not found",
-        details: "Install yt-dlp and ensure it is available in PATH.",
-      });
-    }
-    return res.status(500).json({
-      error: "Failed to start yt-dlp",
-      details: spawnErr?.message || "Unknown spawn error",
-    });
-  });
+  proc.stdout.on("data", (d) => (data += d.toString()));
+  proc.stderr.on("data", (d) => (err += d.toString()));
 
   proc.on("close", (code) => {
-    if (responded) return;
     if (code !== 0) {
-      responded = true;
-      console.error("yt-dlp info error:", err.trim());
-      return res.status(500).json({
-        error: "Failed to fetch info",
-        details: err.trim() || "yt-dlp error",
-      });
+      console.error("yt-dlp error:", err);
+      return res.status(500).json({ error: "Failed to fetch info" });
     }
+
     try {
-      const info = JSON.parse(out);
-      const formats = mapFormats(info);
-      const extractor = String(info.extractor_key || info.extractor || "")
-        .toLowerCase()
-        .trim();
-      const isYouTube = extractor.includes("youtube");
-      responded = true;
+      const info = JSON.parse(data);
+
       res.json({
         id: info.id,
         title: info.title,
         thumbnail: info.thumbnail,
         duration: info.duration,
-        embedUrl:
-          isYouTube && info.id
-            ? `https://www.youtube.com/embed/${info.id}`
-            : null,
-        sourceUrl: info.webpage_url || null,
-        formats,
+        embedUrl: `https://www.youtube.com/embed/${info.id}`,
+        formats: mapFormats(info),
       });
     } catch (e) {
-      responded = true;
-      console.error("yt-dlp info parse error:", e);
       res.status(500).json({ error: "Invalid yt-dlp response" });
     }
   });
 });
 
 app.post("/api/download", (req, res) => {
-  const url = String(req.body?.url || "").trim();
-  const formatId = String(req.body?.formatId || "").trim();
-  const hasAudio = Boolean(req.body?.hasAudio);
-  const isMp3 = Boolean(req.body?.isMp3);
-  const audioBitrateRaw = req.body?.audioBitrate;
-  const audioBitrate = [128, 192, 320].includes(Number(audioBitrateRaw))
-    ? Number(audioBitrateRaw)
-    : null;
-  const title = safeAsciiFilename(String(req.body?.title || "video"));
+  const url = String(req.body.url || "");
+  const formatId = String(req.body.formatId || "");
+  const hasAudio = Boolean(req.body.hasAudio);
+  const isMp3 = Boolean(req.body.isMp3);
 
-  if (!url) return res.status(400).json({ error: "Missing URL" });
-  if (!isMp3 && !formatId) {
-    return res.status(400).json({ error: "Missing format" });
-  }
+  const title = safeFilename(req.body.title || "video");
 
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const jobId = "job_" + Date.now();
+
   const ext = isMp3 ? "mp3" : "mp4";
-  const outTemplate = path.join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
 
-  const args = ["--no-playlist", "--newline", "-o", outTemplate];
-  applyCookieArgs(args);
+  const output = path.join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
+
+  const args = ["--newline", "-o", output];
 
   if (isMp3) {
     args.push("-x", "--audio-format", "mp3");
-    if (audioBitrate) {
-      args.push("--audio-quality", `${audioBitrate}K`);
-    }
   } else {
     if (hasAudio) {
       args.push("-f", formatId);
     } else {
       args.push("-f", `${formatId}+bestaudio`);
+      args.push("--merge-output-format", "mp4");
     }
-    args.push("--merge-output-format", "mp4");
   }
 
   args.push(url);
 
   const proc = spawn("python3", ["-m", "yt_dlp", ...args]);
-  let responded = false;
 
-  proc.once("spawn", () => {
-    jobs.set(jobId, {
-      path: path.join(DOWNLOAD_DIR, `${jobId}.${ext}`),
-      ext,
-      title,
-      status: "downloading",
-    });
-    if (!responded) {
-      responded = true;
-      res.json({ jobId, ext });
-    }
+  jobs.set(jobId, {
+    path: path.join(DOWNLOAD_DIR, `${jobId}.${ext}`),
+    title,
+    ext,
+    status: "downloading",
   });
 
-  proc.on("error", (spawnErr) => {
-    if (!responded) {
-      responded = true;
-      console.error("yt-dlp spawn error (download):", spawnErr);
-      if (spawnErr && spawnErr.code === "ENOENT") {
-        return res.status(500).json({
-          error: "yt-dlp not found",
-          details: "Install yt-dlp and ensure it is available in PATH.",
-        });
-      }
-      return res.status(500).json({
-        error: "Failed to start yt-dlp",
-        details: spawnErr?.message || "Unknown spawn error",
-      });
-    }
-    sendProgress(jobId, { type: "error", jobId });
-  });
+  res.json({ jobId, ext });
 
   proc.stdout.on("data", (d) => {
-    const lines = d.toString("utf8").split(/\r?\n/);
+    const lines = d.toString().split("\n");
+
     for (const line of lines) {
       const parsed = parseProgress(line);
+
       if (parsed.percent !== null) {
         sendProgress(jobId, {
           type: "progress",
@@ -274,29 +188,14 @@ app.post("/api/download", (req, res) => {
     }
   });
 
-  proc.stderr.on("data", (d) => {
-    const line = d.toString("utf8");
-    const parsed = parseProgress(line);
-    if (parsed.percent !== null) {
-      sendProgress(jobId, {
-        type: "progress",
-        jobId,
-        percent: parsed.percent,
-        speed: parsed.speed,
-        eta: parsed.eta,
-      });
-    }
-  });
-
   proc.on("close", (code) => {
-    if (!responded) {
-      responded = true;
-      res.json({ jobId, ext });
-    }
     const job = jobs.get(jobId);
+
     if (!job) return;
+
     if (code === 0 && fs.existsSync(job.path)) {
       job.status = "done";
+
       sendProgress(jobId, {
         type: "done",
         jobId,
@@ -304,46 +203,50 @@ app.post("/api/download", (req, res) => {
         filename: `${job.title}.${job.ext}`,
       });
     } else {
-      console.error("yt-dlp download failed:", { jobId, code });
       job.status = "error";
+
       sendProgress(jobId, { type: "error", jobId });
     }
   });
 });
 
 app.get("/api/file/:jobId", (req, res) => {
-  const jobId = String(req.params.jobId || "");
-  const job = jobs.get(jobId);
+  const job = jobs.get(req.params.jobId);
+
   if (!job || !fs.existsSync(job.path)) {
     return res.status(404).send("File not found");
   }
+
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="${job.title}.${job.ext}"`
+    `attachment; filename="${job.title}.${job.ext}"`,
   );
+
   res.sendFile(job.path);
 });
 
 wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
-    let msg;
     try {
-      msg = JSON.parse(raw.toString("utf8"));
-    } catch {
-      return;
-    }
-    if (msg.type === "subscribe" && msg.jobId) {
-      const jobId = String(msg.jobId);
-      if (!wsSubscribers.has(jobId)) wsSubscribers.set(jobId, new Set());
-      wsSubscribers.get(jobId).add(ws);
-    }
+      const msg = JSON.parse(raw);
+
+      if (msg.type === "subscribe" && msg.jobId) {
+        if (!wsSubscribers.has(msg.jobId)) {
+          wsSubscribers.set(msg.jobId, new Set());
+        }
+
+        wsSubscribers.get(msg.jobId).add(ws);
+      }
+    } catch {}
   });
 
   ws.on("close", () => {
-    for (const subs of wsSubscribers.values()) subs.delete(ws);
+    for (const subs of wsSubscribers.values()) {
+      subs.delete(ws);
+    }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
