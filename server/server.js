@@ -123,7 +123,7 @@ app.post("/api/info", (req, res) => {
 
   const args = ["-J", "--no-playlist", url];
   applyCookieArgs(args);
-  const proc = spawn("yt-dlp", args);
+  const proc = spawn("python3", ["-m", "yt_dlp", ...args]);
   let responded = false;
 
   let out = "";
@@ -224,7 +224,7 @@ app.post("/api/download", (req, res) => {
 
   args.push(url);
 
-  const proc = spawn("yt-dlp", args);
+  const proc = spawn("python3", ["-m", "yt_dlp", ...args]);
   let responded = false;
 
   proc.once("spawn", () => {
